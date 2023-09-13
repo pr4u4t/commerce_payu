@@ -2,19 +2,15 @@
 
 namespace Drupal\commerce_payu\PluginForm;
 
-use Drupal;
-use Drupal\Core\Messenger\MessengerInterface;
-use OpenPayU_Configuration;
 use Drupal\commerce_payment\PluginForm\PaymentOffsiteForm as BasePaymentOffsiteForm;
-use Drupal\Core\Logger\LoggerChannelFactoryInterface;
-use Drupal\Core\Form\FormStateInterface;
-use OpenPayU_Exception_Request;
-use OpenPayU_Order;
 use Drupal\Core\DependencyInjection\ContainerInjectionInterface;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Logger\LoggerChannelFactoryInterface;
+use Drupal\Core\Messenger\MessengerInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
 /**
- * Class PayuPaymentForm.
+ * Provides the Off-site Redirect payment gateway form.
  *
  * @package Drupal\commerce_payu\PluginForm
  */
@@ -42,7 +38,8 @@ class PayuPaymentForm extends BasePaymentOffsiteForm implements ContainerInjecti
    * @param \Drupal\Core\Messenger\MessengerInterface $messenger
    *   Messenger instance.
    */
-  public function __construct(LoggerChannelFactoryInterface $logger, MessengerInterface $messenger) {
+  public function __construct(LoggerChannelFactoryInterface $logger,
+                              MessengerInterface $messenger) {
     $this->loggerFactory = $logger;
     $this->messenger = $messenger;
   }
@@ -53,7 +50,7 @@ class PayuPaymentForm extends BasePaymentOffsiteForm implements ContainerInjecti
   public static function create(ContainerInterface $container) {
     return new static(
       $container->get('logger.factory'),
-      $container->get('messenger')
+      $container->get('messenger'),
     );
   }
 
@@ -102,12 +99,13 @@ class PayuPaymentForm extends BasePaymentOffsiteForm implements ContainerInjecti
 
     // Form url values.
     $order['continueUrl'] = $form['#return_url'];
+    syslog(LOG_ERR, "RETURN URL: " . $form['#return_url']);
     $order['cancelUrl'] = $form['#cancel_url'];
     $order['notifyUrl'] = $payment_gateway_plugin->getNotifyUrl()->toString();
-    $order['customerIp'] = Drupal::request()->getClientIp();
+    $order['customerIp'] = \Drupal::request()->getClientIp();
 
     // Payment data.
-    $order['merchantPosId'] = OpenPayU_Configuration::getMerchantPosId();
+    $order['merchantPosId'] = \OpenPayU_Configuration::getMerchantPosId();
     $order['description'] = 'Płatność ' . $billing_address->getGivenName() . ' ' . $billing_address->getFamilyName() . ' z dnia ' . $orderDate;
     $order['currencyCode'] = $payment->getAmount()->getCurrencyCode();
     $order['totalAmount'] = (int) ($payment->getAmount()->getNumber() * 100);
@@ -132,10 +130,10 @@ class PayuPaymentForm extends BasePaymentOffsiteForm implements ContainerInjecti
     $order['buyer']['delivery']['countryCode'] = $billing_address->getCountryCode();
 
     try {
-      $payuOrder = OpenPayU_Order::create($order);
+      $payuOrder = \OpenPayU_Order::create($order);
       $redirect_url = $payuOrder->getResponse()->redirectUri;
     }
-    catch (OpenPayU_Exception_Request $exception) {
+    catch (\OpenPayU_Exception_Request $exception) {
       $this->loggerFactory->get('commerce_payu')->error('Error with payu order payment: ' . $exception->getMessage());
       $this->messenger->addWarning('Contact with site administrators due to error.');
       return [];
@@ -148,21 +146,6 @@ class PayuPaymentForm extends BasePaymentOffsiteForm implements ContainerInjecti
     }
 
     return $this->buildRedirectForm($form, $form_state, $redirect_url, $processOrder, self::REDIRECT_POST);
-  }
-
-  /**
-   * Form submission handler.
-   *
-   * @param array $form
-   *   An associative array containing the structure of the plugin form as built
-   *   by static::buildConfigurationForm().
-   * @param \Drupal\Core\Form\FormStateInterface $form_state
-   *   The current state of the form. Calling code should pass on a subform
-   *   state created through
-   *   \Drupal\Core\Form\SubformState::createForSubform().
-   */
-  public function submitConfigurationForm(array &$form, FormStateInterface $form_state) {
-    // TODO: Implement submitConfigurationForm() method.
   }
 
   /**

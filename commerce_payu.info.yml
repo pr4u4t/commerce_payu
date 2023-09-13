@@ -1,8 +1,7 @@
 name: Commerce PayU
 type: module
 description: Commerce PayU gateway integration
-package: Custom
-core: 8.x
-core_version_requirement: ^8 || ^9
+package: Commerce (Contrib)
+core_version_requirement: ^9.3 || ^10
 dependencies:
   - commerce:commerce_payment

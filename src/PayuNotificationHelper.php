@@ -6,7 +6,7 @@ use Drupal\commerce_order\Entity\Order;
 use Symfony\Component\HttpFoundation\Request;
 
 /**
- * Class PayuNotificationHelper.
+ * Class PayuNotificationHelper validation and order state transition utilities.
  *
  * @package Drupal\commerce_payu
  */
@@ -56,11 +56,12 @@ class PayuNotificationHelper {
     if ($transition = $order->getState()
       ->getWorkflow()
       ->getTransition($transitionName)) {
-      $order->getState()->applyTransition($transition);
+      $order->getState()->applyTransitionById($transitionName);
       $order->save();
 
       return TRUE;
     }
+
     return FALSE;
   }
 
@@ -76,24 +77,16 @@ class PayuNotificationHelper {
    *   Returns transition name, or null.
    */
   public function getTransitionName($payuStatus, $orderType) {
-    $transitionName = NULL;
-
     if ($payuStatus === 'COMPLETED') {
       if (substr($orderType, -11) === '_validation') {
-        $transitionName = 'validate';
+        return 'validate';
       }
       else {
-        $transitionName = 'place';
+        return 'place';
       }
     }
-    elseif ($payuStatus === 'CANCELED') {
-      $transitionName = 'cancel';
-    }
-    elseif ($payuStatus === 'PENDING') {
-      $transitionName = 'place';
-    }
 
-    return $transitionName;
+    return NULL;
   }
 
 }

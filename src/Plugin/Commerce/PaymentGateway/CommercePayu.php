@@ -2,6 +2,7 @@
 
 namespace Drupal\commerce_payu\Plugin\Commerce\PaymentGateway;
 
+use Drupal\commerce_order\Entity\OrderInterface;
 use Drupal\commerce_payment\Exception\PaymentGatewayException;
 use Drupal\commerce_payment\PaymentMethodTypeManager;
 use Drupal\commerce_payment\PaymentTypeManager;
@@ -11,13 +12,12 @@ use Drupal\commerce_payu\PayuNotificationHelper;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormStateInterface;
-use OpenPayU_Configuration;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Class CommercePayu.
+ * Class CommercePayu provides the Off-site Redirect payment gateway.
  *
  * @package Drupal\commerce_payu\Plugin\Commerce\PaymentGateway
  * @CommercePaymentGateway(
@@ -58,20 +58,24 @@ class CommercePayu extends OffsitePaymentGatewayBase implements OffsitePaymentGa
    * @param \Drupal\commerce_payu\PayuNotificationHelper $notification_helper
    *   The notification helper.
    */
-  public function __construct(array $configuration, $plugin_id, $plugin_definition, EntityTypeManagerInterface $entity_type_manager, PaymentTypeManager $payment_type_manager, PaymentMethodTypeManager $payment_method_type_manager, TimeInterface $time, PayuNotificationHelper $notification_helper) {
-    parent::__construct($configuration, $plugin_id, $plugin_definition, $entity_type_manager, $payment_type_manager, $payment_method_type_manager, $time);
+  public function __construct(array $configuration,
+                              $plugin_id,
+                              $plugin_definition,
+                              EntityTypeManagerInterface $entity_type_manager,
+                              PaymentTypeManager $payment_type_manager,
+                              PaymentMethodTypeManager $payment_method_type_manager,
+                              TimeInterface $time,
+                              PayuNotificationHelper $notification_helper) {
+    parent::__construct($configuration,
+                        $plugin_id,
+                        $plugin_definition,
+                        $entity_type_manager,
+                        $payment_type_manager,
+                        $payment_method_type_manager,
+                        $time
+                        );
     $this->notificationHelper = $notification_helper;
-    $config = $this->getConfiguration();
-    $env = 'sandbox';
-    if ($config['mode'] == 'live') {
-      $env = 'secure';
-    }
-
-    OpenPayU_Configuration::setEnvironment($env);
-    OpenPayU_Configuration::setMerchantPosId($config['pos_id']);
-    OpenPayU_Configuration::setSignatureKey($config['signature_key']);
-    OpenPayU_Configuration::setOauthClientId($config['client_id']);
-    OpenPayU_Configuration::setOauthClientSecret($config['client_secret']);
+    $this->setupPayu();
   }
 
   /**
@@ -115,6 +119,7 @@ class CommercePayu extends OffsitePaymentGatewayBase implements OffsitePaymentGa
       'client_id' => '',
       'client_secret' => '',
     ];
+
     return $config + parent::defaultConfiguration();
   }
 
@@ -174,17 +179,30 @@ class CommercePayu extends OffsitePaymentGatewayBase implements OffsitePaymentGa
    * @throws \OpenPayU_Exception_Configuration
    */
   public function __wakeup() {
-    $config = $this->getConfiguration();
-    $env = 'sandbox';
-    if ($config['mode'] == 'live') {
-      $env = 'secure';
-    }
+    $this->setupPayu();
+  }
 
-    OpenPayU_Configuration::setEnvironment($env);
-    OpenPayU_Configuration::setMerchantPosId($config['pos_id']);
-    OpenPayU_Configuration::setSignatureKey($config['signature_key']);
-    OpenPayU_Configuration::setOauthClientId($config['client_id']);
-    OpenPayU_Configuration::setOauthClientSecret($config['client_secret']);
+  /**
+   * Setup Open Payu environment and configuration.
+   *
+   * @throws \OpenPayU_Exception_Configuration
+   */
+  protected function setupPayu() {
+    \OpenPayU_Configuration::setEnvironment($this->getPayuEnv());
+    \OpenPayU_Configuration::setMerchantPosId($this->configuration['pos_id']);
+    \OpenPayU_Configuration::setSignatureKey($this->configuration['signature_key']);
+    \OpenPayU_Configuration::setOauthClientId($this->configuration['client_id']);
+    \OpenPayU_Configuration::setOauthClientSecret($this->configuration['client_secret']);
+  }
+
+  /**
+   * Get Payu library environment setting.
+   *
+   * @return string
+   *   'secure' when mode is set to 'live', 'sandbox' otherwise
+   */
+  protected function getPayuEnv() {
+    return $this->getConfiguration()['mode'] === 'live' ? 'secure' : 'sandbox';
   }
 
   /**
@@ -204,7 +222,13 @@ class CommercePayu extends OffsitePaymentGatewayBase implements OffsitePaymentGa
   public function onNotify(Request $request) {
     $config = $this->getConfiguration();
 
-    $payuOrder = json_decode($request->getContent())->order;
+    $payuOrder = json_decode($request->getContent());
+
+    if ($payuOrder == NULL) {
+      throw new PaymentGatewayException('ERROR - Invalid PayU Request');
+    }
+
+    $payuOrder = $payuOrder->order;
     $payuOrderExtId = $payuOrder->extOrderId;
 
     $storage = $this->entityTypeManager->getStorage('commerce_order');
@@ -213,53 +237,61 @@ class CommercePayu extends OffsitePaymentGatewayBase implements OffsitePaymentGa
     $drupalOrder = $drupalOrders[] = array_pop($drupalOrders);
 
     if ($drupalOrder == NULL) {
-      return new Response('Waiting for creation of drupal order', 500);
+      return new Response('Waiting for creation of drupal order', Response::HTTP_INTERNAL_SERVER_ERROR);
     }
 
     if (!$this->notificationHelper->areValidSignatures($request, $config)) {
       \OpenPayU_Order::cancel($payuOrder->orderId);
-      $this->notificationHelper->setTransition(
-        $drupalOrder,
-        $this->notificationHelper->getTransitionName(
-          'CANCELED', $drupalOrder->getState()->getWorkflow()->getId()
-        )
-      );
-      throw new PaymentGatewayException('ERROR - Unvalid PayU Request');
+      throw new PaymentGatewayException('ERROR - Invalid PayU Signature');
     }
 
     $payuStatus = $payuOrder->status;
-    $transitionName = $this->notificationHelper->getTransitionName($payuStatus, $drupalOrder->getState()->getWorkflow()->getId());
-
-    if (!$this->notificationHelper->setTransition($drupalOrder, $transitionName)) {
-      return new Response('ERROR - Transition name not in workflow', 500);
-    }
 
     $paymentStorage = $this->entityTypeManager->getStorage('commerce_payment');
-    $payments = $paymentStorage->loadByProperties(['order_id' => $payuOrderExtId]);
-    /** @var \Drupal\Core\Entity\ContentEntityInterface $payment */
-    $payment = $payments[] = array_pop($payments);
 
-    if ($payment == NULL) {
+    if ($payuStatus == 'COMPLETED') {
       $paymentStorage->create([
-        'state' => $drupalOrder->getState()->getString(),
+        'state' => 'authorize',
         'amount' => $drupalOrder->getTotalPrice(),
         'payment_gateway' => $this->parentEntity->id(),
         'order_id' => $payuOrderExtId,
         'remote_id' => $payuOrder->orderId,
         'remote_state' => $payuStatus,
-        'completed' => $drupalOrder->getState()->getString() === 'COMPLETED' ? TRUE : FALSE,
+        'completed' => TRUE,
       ])->save();
-    }
-    else {
-      $payment
-        ->set('state', $drupalOrder->getState()->getString())
-        ->set('remote_id', $payuOrder->orderId)
-        ->set('remote_state', $payuStatus)
-        ->set('completed', $drupalOrder->getState()->getString() === 'COMPLETED' ? TRUE : FALSE)
-        ->save();
+
+      $payments = $paymentStorage->loadByProperties(['order_id' => $payuOrderExtId]);
+      /** @var \Drupal\Core\Entity\ContentEntityInterface $payment */
+      $payment = $payments[] = array_pop($payments);
+      $transitionName = $this->notificationHelper->getTransitionName($payuStatus, $drupalOrder->getState()->getWorkflow()->getId());
+
+      if (!$this->notificationHelper->setTransition($drupalOrder, $transitionName)) {
+        return new Response(
+          'ERROR - Transition name not in workflow',
+          Response::HTTP_INTERNAL_SERVER_ERROR
+        );
+      }
     }
 
     return new Response('Notification OK');
+  }
+
+  /**
+   * Handler called upon return from offsite payment processing.
+   *
+   * @param Drupal\commerce_order\Entity\OrderInterface $order
+   *   The current Order object.
+   * @param \Symfony\Component\HttpFoundation\Request $request
+   *   The Request object.
+   *
+   * @throws Drupal\commerce_payment\Exception\PaymentGatewayException
+   */
+  public function onReturn(OrderInterface $order, Request $request) {
+    $paymentStorage = $this->entityTypeManager->getStorage('commerce_payment');
+    $payments = $paymentStorage->loadByProperties(['order_id' => $order->id()]);
+    if (count($payments) == 0) {
+      throw new PaymentGatewayException("Payment failed try again");
+    }
   }
 
 }

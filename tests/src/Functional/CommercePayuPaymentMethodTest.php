@@ -62,7 +62,6 @@ class CommercePayuPaymentMethodTest extends BrowserTestBase {
 
     // $this->drupalPlaceBlock('commerce_cart');
     // $this->drupalPlaceBlock('commerce_checkout_progress');
-
     // Order setup.
     /** @var \Drupal\commerce_product\Entity\Store $store */
     $store = Store::create([
